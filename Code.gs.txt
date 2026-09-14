@@ -1,0 +1,1535 @@
+// ============================================================
+// MENTERI CAFE - BACKEND (COMPLETE FIXED)
+// ============================================================
+
+function doGet() {
+  try {
+    var html = HtmlService.createHtmlOutputFromFile('Index')
+      .setTitle('☕ Menteri Cafe POS')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    return html;
+  } catch (error) {
+    return HtmlService.createHtmlOutput('<h1>❌ Error</h1><p>' + error.message + '</p>');
+  }
+}
+
+// ============================================================
+// MENU ITEMS
+// ============================================================
+
+function getMenuItems() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Menu_Master');
+    if (!sheet || sheet.getLastRow() <= 1) {
+      return getDefaultMenu();
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var items = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row && row[0]) {
+        items.push({
+          ItemID: String(row[0]),
+          ItemName: String(row[1] || ''),
+          Category: String(row[2] || ''),
+          Price: parseFloat(row[3]) || 0,
+          Cost: parseFloat(row[4]) || 0,
+          IsAvailable: row[5] === 'TRUE' || row[5] === true
+        });
+      }
+    }
+    return items.length > 0 ? items : getDefaultMenu();
+  } catch (error) {
+    return getDefaultMenu();
+  }
+}
+
+function getDefaultMenu() {
+  return [
+    { ItemID: 'MCF-001', ItemName: 'Americano', Category: 'Coffee', Price: 25000, Cost: 8000, IsAvailable: true },
+    { ItemID: 'MCF-002', ItemName: 'Cappuccino', Category: 'Coffee', Price: 28000, Cost: 9000, IsAvailable: true },
+    { ItemID: 'MCF-003', ItemName: 'Latte', Category: 'Coffee', Price: 28000, Cost: 8500, IsAvailable: true },
+    { ItemID: 'MCF-004', ItemName: 'Croissant', Category: 'Pastry', Price: 15000, Cost: 5000, IsAvailable: true },
+    { ItemID: 'MCF-005', ItemName: 'Nasi Goreng', Category: 'Food', Price: 35000, Cost: 15000, IsAvailable: true },
+    { ItemID: 'MCF-006', ItemName: 'Matcha Latte', Category: 'Beverage', Price: 30000, Cost: 12000, IsAvailable: true },
+    { ItemID: 'MCF-007', ItemName: 'Thai Tea', Category: 'Beverage', Price: 25000, Cost: 8000, IsAvailable: true },
+    { ItemID: 'MCF-008', ItemName: 'Cheesecake', Category: 'Pastry', Price: 25000, Cost: 12000, IsAvailable: true }
+  ];
+}
+
+// ============================================================
+// GET MENU WITH STOCK
+// ============================================================
+
+function getMenuWithStock() {
+  try {
+    var menu = getMenuItems();
+    var stock = getInventoryItems();
+    
+    var stockMap = {};
+    for (var i = 0; i < stock.length; i++) {
+      stockMap[stock[i].ItemID] = stock[i];
+    }
+    
+    for (var i = 0; i < menu.length; i++) {
+      if (stockMap[menu[i].ItemID]) {
+        menu[i].Stock = stockMap[menu[i].ItemID].CurrentStock || 0;
+        menu[i].MinStock = stockMap[menu[i].ItemID].MinStock || 0;
+        menu[i].Unit = stockMap[menu[i].ItemID].Unit || '';
+      } else {
+        menu[i].Stock = 0;
+        menu[i].MinStock = 0;
+        menu[i].Unit = '';
+      }
+    }
+    
+    return menu;
+  } catch (error) {
+    return getMenuItems();
+  }
+}
+
+// ============================================================
+// INVENTORY ITEMS
+// ============================================================
+
+function getInventoryItems() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Inventory_Stock');
+    if (!sheet || sheet.getLastRow() <= 1) return [];
+    
+    var data = sheet.getDataRange().getValues();
+    var items = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row && row[0]) {
+        items.push({
+          ItemID: String(row[0]),
+          CurrentStock: parseFloat(row[1]) || 0,
+          MinStock: parseFloat(row[2]) || 0,
+          Unit: String(row[3] || '')
+        });
+      }
+    }
+    return items;
+  } catch (error) {
+    return [];
+  }
+}
+
+// ============================================================
+// TRANSACTIONS - FIXED
+// ============================================================
+
+function getTransactionHistory(limit) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Transactions');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Transactions');
+      var headers = [
+        'TransactionID', 'Timestamp', 'CashierName', 'Items', 
+        'Subtotal', 'Discount', 'Tax', 'Total', 
+        'PaymentMethod', 'AmountPaid', 'Change', 'Status'
+      ];
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+      createSampleTransactions();
+      sheet = ss.getSheetByName('Transactions');
+    }
+    
+    var lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      createSampleTransactions();
+      lastRow = sheet.getLastRow();
+    }
+    
+    if (lastRow <= 1) {
+      return [];
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var transactions = [];
+    var maxLimit = limit || 100;
+    var count = 0;
+    
+    for (var i = data.length - 1; i >= 1 && count < maxLimit; i--) {
+      var row = data[i];
+      if (!row || !row[0] || row[0] === '' || row[0] === 'TransactionID') continue;
+      
+      var items = [];
+      var itemsStr = String(row[3] || '[]');
+      
+      try {
+        if (itemsStr && itemsStr !== '[]' && itemsStr !== '') {
+          var cleanStr = itemsStr.replace(/\r/g, '').replace(/\n/g, '');
+          
+          try {
+            var parsed = JSON.parse(cleanStr);
+            if (Array.isArray(parsed)) {
+              items = parsed;
+            } else if (typeof parsed === 'object' && parsed !== null) {
+              items = [parsed];
+            }
+          } catch (jsonError) {
+            var itemMatches = itemsStr.match(/\{[^}]+\}/g);
+            if (itemMatches) {
+              for (var m = 0; m < itemMatches.length; m++) {
+                var itemStr = itemMatches[m];
+                var itemObj = {};
+                
+                var idMatch = itemStr.match(/["']?ItemID["']?\s*[:=]\s*["']?([^"',}]+)/i);
+                if (idMatch) itemObj.ItemID = idMatch[1].trim();
+                
+                var nameMatch = itemStr.match(/["']?ItemName["']?\s*[:=]\s*["']?([^"',}]+)/i);
+                if (nameMatch) itemObj.ItemName = nameMatch[1].trim();
+                
+                var qtyMatch = itemStr.match(/["']?Quantity["']?\s*[:=]\s*(\d+)/i);
+                if (qtyMatch) itemObj.Quantity = parseInt(qtyMatch[1]);
+                else itemObj.Quantity = 1;
+                
+                var priceMatch = itemStr.match(/["']?UnitPrice["']?\s*[:=]\s*(\d+)/i);
+                if (priceMatch) itemObj.UnitPrice = parseFloat(priceMatch[1]);
+                else itemObj.UnitPrice = 0;
+                
+                if (itemObj.ItemName) {
+                  items.push(itemObj);
+                }
+              }
+            }
+            
+            if (items.length === 0) {
+              var nameMatch2 = itemsStr.match(/["']?ItemName["']?\s*[:=]\s*["']?([^"',}]+)/i);
+              var qtyMatch2 = itemsStr.match(/["']?Quantity["']?\s*[:=]\s*(\d+)/i);
+              var priceMatch2 = itemsStr.match(/["']?UnitPrice["']?\s*[:=]\s*(\d+)/i);
+              
+              if (nameMatch2) {
+                items = [{
+                  ItemName: nameMatch2[1].trim(),
+                  Quantity: parseInt(qtyMatch2 ? qtyMatch2[1] : 1),
+                  UnitPrice: parseFloat(priceMatch2 ? priceMatch2[1] : 0)
+                }];
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      
+      if (items.length === 0 && row[3]) {
+        var fallbackName = String(row[3]);
+        var nameMatch = fallbackName.match(/["']?ItemName["']?\s*[:=]\s*["']?([^"',}]+)/i);
+        if (nameMatch) {
+          items = [{
+            ItemName: nameMatch[1].trim(),
+            Quantity: 1,
+            UnitPrice: parseFloat(row[7]) / 1 || 0
+          }];
+        } else {
+          items = [{
+            ItemName: fallbackName.substring(0, 30) + '...',
+            Quantity: 1,
+            UnitPrice: parseFloat(row[7]) || 0
+          }];
+        }
+      }
+      
+      var transaction = {
+        TransactionID: String(row[0] || 'TRX-' + Date.now()),
+        Timestamp: row[1] || new Date().toISOString(),
+        CashierName: String(row[2] || 'Admin'),
+        Items: items,
+        Subtotal: parseFloat(row[4]) || 0,
+        Discount: parseFloat(row[5]) || 0,
+        Tax: parseFloat(row[6]) || 0,
+        Total: parseFloat(row[7]) || 0,
+        PaymentMethod: String(row[8] || 'Cash'),
+        AmountPaid: parseFloat(row[9]) || 0,
+        Change: parseFloat(row[10]) || 0,
+        Status: String(row[11] || 'Completed')
+      };
+      
+      if (transaction.TransactionID) {
+        transactions.push(transaction);
+        count++;
+      }
+    }
+    
+    return transactions;
+  } catch (error) {
+    return [];
+  }
+}
+
+
+function debugTransactions() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Transactions');
+    
+    if (!sheet) {
+      return { error: 'Sheet Transactions tidak ditemukan!' };
+    }
+    
+    var lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      return { totalRows: 0, message: 'Tidak ada data transaksi' };
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0];
+    var sample = [];
+    for (var i = 1; i < Math.min(6, data.length); i++) {
+      sample.push(data[i]);
+    }
+    
+    return {
+      totalRows: lastRow - 1,
+      headers: headers,
+      sampleData: sample,
+      hasData: lastRow > 1
+    };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+// ============================================================
+// SAMPLE DATA GENERATORS (previously missing - caused
+// "createSampleTransactions is not defined" errors that were
+// silently swallowed, making the Riwayat tab look empty)
+// ============================================================
+
+function createSampleTransactions() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Transactions');
+    if (!sheet) {
+      sheet = ss.insertSheet('Transactions');
+      sheet.appendRow(['TransactionID', 'Timestamp', 'CashierName', 'Items',
+                       'Subtotal', 'Discount', 'Tax', 'Total',
+                       'PaymentMethod', 'AmountPaid', 'Change', 'Status']);
+    }
+
+    var menuItems = getMenuItems();
+    var cashiers = ['Admin', 'Budi Kasir'];
+    var paymentMethods = ['Cash', 'QRIS', 'Debit'];
+    var now = new Date();
+    var dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyyMMdd');
+
+    for (var s = 0; s < 5; s++) {
+      var itemCount = Math.floor(Math.random() * 3) + 1;
+      var items = [];
+      var subtotal = 0;
+
+      for (var k = 0; k < itemCount; k++) {
+        var mi = menuItems[Math.floor(Math.random() * menuItems.length)];
+        var qty = Math.floor(Math.random() * 2) + 1;
+        items.push({ ItemID: mi.ItemID, ItemName: mi.ItemName, Quantity: qty, UnitPrice: mi.Price });
+        subtotal += mi.Price * qty;
+      }
+
+      var total = subtotal;
+      var trxTime = new Date(now.getTime() - (s * 60 * 60 * 1000));
+      var trxId = 'INV-' + dateStr + '-SMP' + String(s + 1).padStart(3, '0');
+
+      sheet.appendRow([
+        trxId,
+        trxTime,
+        cashiers[s % cashiers.length],
+        JSON.stringify(items),
+        subtotal,
+        0,
+        0,
+        total,
+        paymentMethods[s % paymentMethods.length],
+        total,
+        0,
+        'Completed'
+      ]);
+    }
+
+    return { success: true, message: '5 transaksi sample berhasil dibuat' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function setupPOSData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    var menuSheet = ss.getSheetByName('Menu_Master');
+    if (!menuSheet || menuSheet.getLastRow() <= 1) {
+      if (!menuSheet) {
+        menuSheet = ss.insertSheet('Menu_Master');
+        menuSheet.appendRow(['ItemID', 'ItemName', 'Category', 'Price', 'Cost', 'IsAvailable']);
+      }
+      var stockSheet = ss.getSheetByName('Inventory_Stock');
+      if (!stockSheet) {
+        stockSheet = ss.insertSheet('Inventory_Stock');
+        stockSheet.appendRow(['ItemID', 'CurrentStock', 'MinStock', 'Unit']);
+      }
+      var defaultMenu = getDefaultMenu();
+      for (var i = 0; i < defaultMenu.length; i++) {
+        var m = defaultMenu[i];
+        menuSheet.appendRow([m.ItemID, m.ItemName, m.Category, m.Price, m.Cost, m.IsAvailable]);
+        stockSheet.appendRow([m.ItemID, 50, 10, 'pcs']);
+      }
+    }
+
+    var staffSheet = ss.getSheetByName('Staff_Data');
+    if (!staffSheet) {
+      staffSheet = ss.insertSheet('Staff_Data');
+      staffSheet.appendRow(['StaffID', 'FullName', 'Position', 'Email', 'Phone', 'JoinDate',
+        'BaseSalary', 'HourlyRate', 'ShiftSchedule', 'BankAccount', 'IsActive', 'Role', 'Branch']);
+      staffSheet.appendRow(['STF-001', 'Admin', 'Owner', '', '', new Date(), 0, 0, '', '', true, 'Owner', 'Head Office']);
+      staffSheet.appendRow(['STF-002', 'Budi Kasir', 'Cashier', '', '', new Date(), 0, 0, '', '', true, 'Cashier', 'Head Office']);
+    }
+
+    var branchSheet = ss.getSheetByName('Branches');
+    if (!branchSheet) {
+      branchSheet = ss.insertSheet('Branches');
+      branchSheet.appendRow(['BranchID', 'BranchName', 'Address', 'Phone', 'Manager', 'Status']);
+      branchSheet.appendRow(['BRN-001', 'Head Office', 'Jl. Contoh No. 1', '0812-3456-7890', 'Admin', 'Active']);
+    }
+
+    var custSheet = ss.getSheetByName('Customer_Data');
+    if (!custSheet) {
+      custSheet = ss.insertSheet('Customer_Data');
+      custSheet.appendRow(['CustomerID', 'Name', 'Phone', 'Email', 'Points', 'TotalSpend', 'TotalVisits', 'LastVisit', 'IsVIP']);
+    }
+
+    var trxResult = createSampleTransactions();
+
+    return { success: true, message: 'Data sample berhasil dibuat! ' + (trxResult.message || '') };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function callSetupPOSData() {
+  return setupPOSData();
+}
+
+function processTransaction(transactionData) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Transactions');
+    if (!sheet) {
+      sheet = ss.insertSheet('Transactions');
+      sheet.appendRow(['TransactionID', 'Timestamp', 'CashierName', 'Items', 
+                       'Subtotal', 'Discount', 'Tax', 'Total', 
+                       'PaymentMethod', 'AmountPaid', 'Change', 'Status']);
+    }
+    
+    var date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd');
+    var count = sheet.getLastRow();
+    var seq = String(count).padStart(4, '0');
+    var trxId = 'INV-' + date + '-' + seq;
+    
+    var items = transactionData.items || [];
+    var subtotal = transactionData.subtotal || 0;
+    var discount = transactionData.discount || 0;
+    var tax = transactionData.tax || 0;
+    var total = subtotal - discount + tax;
+    
+    sheet.appendRow([
+      trxId,
+      new Date(),
+      transactionData.cashierName || 'Admin',
+      JSON.stringify(items),
+      subtotal,
+      discount,
+      tax,
+      total,
+      transactionData.paymentMethod || 'Cash',
+      transactionData.amountPaid || total,
+      (transactionData.amountPaid || total) - total,
+      'Completed'
+    ]);
+    
+    try {
+      var stockSheet = ss.getSheetByName('Inventory_Stock');
+      if (stockSheet && stockSheet.getLastRow() > 1) {
+        var stockData = stockSheet.getDataRange().getValues();
+        for (var i = 0; i < items.length; i++) {
+          var itemId = items[i].ItemID;
+          var qty = items[i].Quantity || 1;
+          for (var j = 1; j < stockData.length; j++) {
+            if (String(stockData[j][0]) === String(itemId)) {
+              var currentStock = parseFloat(stockData[j][1]) || 0;
+              var newStock = Math.max(0, currentStock - qty);
+              stockSheet.getRange(j + 1, 2).setValue(newStock);
+              break;
+            }
+          }
+        }
+      }
+    } catch (stockError) {}
+    
+    lock.releaseLock();
+    
+    return {
+      success: true,
+      transactionId: trxId,
+      total: total
+    };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+// ============================================================
+// DASHBOARD DATA
+// ============================================================
+
+function getDashboardData() {
+  try {
+    var allTransactions = getTransactionHistory(1000);
+    var today = new Date();
+    var todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    
+    var revenueToday = 0;
+    var transactionsToday = 0;
+    var totalRevenue = 0;
+    var totalTransactions = allTransactions.length;
+    var totalCOGS = 0;
+    
+    var menuItems = getMenuItems();
+    var costMap = {};
+    for (var i = 0; i < menuItems.length; i++) {
+      costMap[menuItems[i].ItemID] = menuItems[i].Cost || 0;
+    }
+    
+    for (var i = 0; i < allTransactions.length; i++) {
+      var trx = allTransactions[i];
+      totalRevenue += trx.Total || 0;
+      
+      var trxDate = new Date(trx.Timestamp);
+      var trxDateStr = Utilities.formatDate(trxDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      if (trxDateStr === todayStr) {
+        revenueToday += trx.Total || 0;
+        transactionsToday++;
+      }
+      
+      var items = trx.Items || [];
+      for (var j = 0; j < items.length; j++) {
+        var item = items[j];
+        var cost = costMap[item.ItemID] || 0;
+        totalCOGS += cost * (item.Quantity || 1);
+      }
+    }
+    
+    var grossProfit = totalRevenue - totalCOGS;
+    var profitMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+    
+    var stockSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Inventory_Stock');
+    var lowStock = 0;
+    if (stockSheet && stockSheet.getLastRow() > 1) {
+      var data = stockSheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        var row = data[i];
+        if (row) {
+          var current = parseFloat(row[1]) || 0;
+          var min = parseFloat(row[2]) || 0;
+          if (current <= min && current > 0) lowStock++;
+        }
+      }
+    }
+    
+    return {
+      revenueToday: revenueToday,
+      transactionsToday: transactionsToday,
+      totalRevenue: totalRevenue,
+      totalTransactions: totalTransactions,
+      totalCOGS: totalCOGS,
+      grossProfit: grossProfit,
+      profitMargin: profitMargin,
+      lowStock: lowStock
+    };
+  } catch (error) {
+    return { 
+      revenueToday: 0, 
+      transactionsToday: 0, 
+      totalRevenue: 0, 
+      totalTransactions: 0,
+      totalCOGS: 0,
+      grossProfit: 0,
+      profitMargin: 0,
+      lowStock: 0 
+    };
+  }
+}
+
+function getWeeklySalesData() {
+  try {
+    var allTransactions = getTransactionHistory(1000);
+    var today = new Date();
+    var weekData = [];
+    var days = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+    
+    for (var i = 6; i >= 0; i--) {
+      var date = new Date(today);
+      date.setDate(date.getDate() - i);
+      var dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      weekData.push({
+        date: dateStr,
+        day: days[date.getDay()],
+        revenue: 0,
+        transactions: 0,
+        profit: 0,
+        cogs: 0
+      });
+    }
+    
+    var menuItems = getMenuItems();
+    var costMap = {};
+    for (var i = 0; i < menuItems.length; i++) {
+      costMap[menuItems[i].ItemID] = menuItems[i].Cost || 0;
+    }
+    
+    for (var i = 0; i < allTransactions.length; i++) {
+      var trx = allTransactions[i];
+      var trxDate = new Date(trx.Timestamp);
+      var trxDateStr = Utilities.formatDate(trxDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      
+      for (var j = 0; j < weekData.length; j++) {
+        if (weekData[j].date === trxDateStr) {
+          weekData[j].revenue += trx.Total || 0;
+          weekData[j].transactions++;
+          
+          var items = trx.Items || [];
+          for (var k = 0; k < items.length; k++) {
+            var item = items[k];
+            var cost = costMap[item.ItemID] || 0;
+            weekData[j].cogs += cost * (item.Quantity || 1);
+          }
+          break;
+        }
+      }
+    }
+    
+    for (var j = 0; j < weekData.length; j++) {
+      weekData[j].profit = weekData[j].revenue - weekData[j].cogs;
+    }
+    
+    return weekData;
+  } catch (error) {
+    return [];
+  }
+}
+
+function getProfitLossReport(startDate, endDate) {
+  try {
+    var allTransactions = getTransactionHistory(1000);
+    var menuItems = getMenuItems();
+    
+    var costMap = {};
+    for (var i = 0; i < menuItems.length; i++) {
+      costMap[menuItems[i].ItemID] = menuItems[i].Cost || 0;
+    }
+    
+    var start = new Date(startDate);
+    var end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    var summary = {
+      totalRevenue: 0,
+      totalCOGS: 0,
+      totalGrossProfit: 0,
+      totalTransactions: 0,
+      totalDiscount: 0,
+      totalTax: 0,
+      netProfit: 0,
+      profitMargin: 0,
+      items: {},
+      categories: {}
+    };
+    
+    var itemDetails = {};
+    
+    for (var i = 0; i < allTransactions.length; i++) {
+      var trx = allTransactions[i];
+      var trxDate = new Date(trx.Timestamp);
+      
+      if (trxDate >= start && trxDate <= end) {
+        summary.totalRevenue += trx.Total || 0;
+        summary.totalDiscount += trx.Discount || 0;
+        summary.totalTax += trx.Tax || 0;
+        summary.totalTransactions++;
+        
+        var items = trx.Items || [];
+        for (var j = 0; j < items.length; j++) {
+          var item = items[j];
+          var itemId = item.ItemID || '';
+          var itemName = item.ItemName || 'Unknown';
+          var qty = item.Quantity || 1;
+          var unitPrice = item.UnitPrice || 0;
+          var cost = costMap[itemId] || 0;
+          var totalPrice = unitPrice * qty;
+          var totalCost = cost * qty;
+          var profit = totalPrice - totalCost;
+          
+          if (!itemDetails[itemName]) {
+            itemDetails[itemName] = {
+              name: itemName,
+              id: itemId,
+              category: '',
+              quantity: 0,
+              revenue: 0,
+              cost: 0,
+              profit: 0,
+              margin: 0
+            };
+            
+            for (var k = 0; k < menuItems.length; k++) {
+              if (menuItems[k].ItemID === itemId) {
+                itemDetails[itemName].category = menuItems[k].Category || '';
+                break;
+              }
+            }
+          }
+          
+          itemDetails[itemName].quantity += qty;
+          itemDetails[itemName].revenue += totalPrice;
+          itemDetails[itemName].cost += totalCost;
+          itemDetails[itemName].profit += profit;
+          
+          summary.totalCOGS += totalCost;
+        }
+      }
+    }
+    
+    var itemNames = Object.keys(itemDetails);
+    for (var i = 0; i < itemNames.length; i++) {
+      var item = itemDetails[itemNames[i]];
+      item.margin = item.revenue > 0 ? (item.profit / item.revenue) * 100 : 0;
+    }
+    
+    var categoryDetails = {};
+    for (var i = 0; i < itemNames.length; i++) {
+      var item = itemDetails[itemNames[i]];
+      var cat = item.category || 'Other';
+      if (!categoryDetails[cat]) {
+        categoryDetails[cat] = {
+          name: cat,
+          revenue: 0,
+          cost: 0,
+          profit: 0,
+          quantity: 0,
+          margin: 0
+        };
+      }
+      categoryDetails[cat].revenue += item.revenue;
+      categoryDetails[cat].cost += item.cost;
+      categoryDetails[cat].profit += item.profit;
+      categoryDetails[cat].quantity += item.quantity;
+    }
+    
+    var catNames = Object.keys(categoryDetails);
+    for (var i = 0; i < catNames.length; i++) {
+      var cat = categoryDetails[catNames[i]];
+      cat.margin = cat.revenue > 0 ? (cat.profit / cat.revenue) * 100 : 0;
+    }
+    
+    summary.totalGrossProfit = summary.totalRevenue - summary.totalCOGS;
+    summary.netProfit = summary.totalGrossProfit - summary.totalDiscount - summary.totalTax;
+    summary.profitMargin = summary.totalRevenue > 0 ? (summary.netProfit / summary.totalRevenue) * 100 : 0;
+    summary.items = itemDetails;
+    summary.categories = categoryDetails;
+    
+    return summary;
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+function exportExcelReport(startDate, endDate) {
+  try {
+    var report = getProfitLossReport(startDate, endDate);
+    if (report.error) return 'Error: ' + report.error;
+    
+    var html = '<html><head><meta charset="UTF-8"><title>Laporan Menteri Cafe</title>';
+    html += '<style>';
+    html += 'body{font-family:Arial,sans-serif;padding:20px;}';
+    html += 'h1{color:#1a1a2e;border-bottom:3px solid #f7971e;padding-bottom:10px;}';
+    html += 'h2{color:#2c3e50;margin-top:25px;}';
+    html += 'table{border-collapse:collapse;width:100%;margin:10px 0;}';
+    html += 'th{background:#1a1a2e;color:white;padding:10px;text-align:left;}';
+    html += 'td{padding:8px 10px;border-bottom:1px solid #ddd;}';
+    html += '.total-row{font-weight:bold;background:#f8f9fa;}';
+    html += '.summary{background:#f8f9fa;padding:15px;border-radius:8px;margin:15px 0;}';
+    html += '.summary-item{display:inline-block;margin-right:30px;}';
+    html += '.summary-label{color:#7f8c8d;font-size:12px;}';
+    html += '.summary-value{font-size:20px;font-weight:bold;color:#2c3e50;}';
+    html += '.profit{color:#27ae60;}.loss{color:#e74c3c;}';
+    html += '</style></head><body>';
+    html += '<h1>☕ MENTERI CAFE - LAPORAN LENGKAP</h1>';
+    html += '<p><strong>Periode:</strong> ' + startDate + ' - ' + endDate + '</p>';
+    html += '<p><strong>Tanggal Cetak:</strong> ' + new Date().toLocaleString('id-ID') + '</p>';
+    
+    html += '<div class="summary">';
+    html += '<div class="summary-item"><div class="summary-label">💰 Revenue</div><div class="summary-value">Rp ' + formatRupiah(report.totalRevenue) + '</div></div>';
+    html += '<div class="summary-item"><div class="summary-label">📦 COGS</div><div class="summary-value">Rp ' + formatRupiah(report.totalCOGS) + '</div></div>';
+    html += '<div class="summary-item"><div class="summary-label">📈 Gross Profit</div><div class="summary-value" style="color:' + (report.totalGrossProfit >= 0 ? '#27ae60' : '#e74c3c') + '">Rp ' + formatRupiah(report.totalGrossProfit) + '</div></div>';
+    html += '<div class="summary-item"><div class="summary-label">📊 Profit Margin</div><div class="summary-value">' + (report.profitMargin || 0).toFixed(1) + '%</div></div>';
+    html += '<div class="summary-item"><div class="summary-label">📋 Total Transaksi</div><div class="summary-value">' + report.totalTransactions + '</div></div>';
+    html += '</div>';
+    
+    html += '<h2>📊 LAPORAN PER KATEGORI</h2>';
+    html += '<table><thead><tr><th>Kategori</th><th>Quantity</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th></tr></thead><tbody>';
+    var categories = Object.keys(report.categories || {});
+    for (var i = 0; i < categories.length; i++) {
+      var cat = report.categories[categories[i]];
+      html += '<tr><td><strong>' + escapeHtml(cat.name) + '</strong></td><td>' + cat.quantity + '</td><td>Rp ' + formatRupiah(cat.revenue) + '</td><td>Rp ' + formatRupiah(cat.cost) + '</td><td style="color:' + (cat.profit >= 0 ? '#27ae60' : '#e74c3c') + '">Rp ' + formatRupiah(cat.profit) + '</td><td>' + cat.margin.toFixed(1) + '%</td></tr>';
+    }
+    html += '</tbody></table>';
+    
+    html += '<h2>📋 LAPORAN PER ITEM</h2>';
+    html += '<table><thead><tr><th>Item</th><th>Kategori</th><th>Quantity</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Margin</th></tr></thead><tbody>';
+    var items = Object.keys(report.items || {});
+    items.sort(function(a, b) { return report.items[b].profit - report.items[a].profit; });
+    for (var i = 0; i < Math.min(items.length, 50); i++) {
+      var item = report.items[items[i]];
+      html += '<tr><td><strong>' + escapeHtml(item.name) + '</strong></td><td>' + escapeHtml(item.category || '-') + '</td><td>' + item.quantity + '</td><td>Rp ' + formatRupiah(item.revenue) + '</td><td>Rp ' + formatRupiah(item.cost) + '</td><td style="color:' + (item.profit >= 0 ? '#27ae60' : '#e74c3c') + '">Rp ' + formatRupiah(item.profit) + '</td><td>' + item.margin.toFixed(1) + '%</td></tr>';
+    }
+    html += '</tbody></table>';
+    
+    html += '<p style="margin-top:30px;color:#999;font-size:12px;text-align:center;">Dicetak dari Menteri Cafe POS</p>';
+    html += '</body></html>';
+    
+    return html;
+  } catch (error) {
+    return 'Error: ' + error.message;
+  }
+}
+
+function getShiftReport(startDate, endDate, cashierName) {
+  try {
+    var allTransactions = getTransactionHistory(1000);
+    var start = new Date(startDate);
+    var end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    var report = {
+      cashierName: cashierName || 'All',
+      totalTransactions: 0,
+      totalRevenue: 0,
+      totalDiscount: 0,
+      totalTax: 0,
+      netRevenue: 0,
+      averageTransaction: 0,
+      paymentMethods: {},
+      transactions: []
+    };
+    
+    for (var i = 0; i < allTransactions.length; i++) {
+      var trx = allTransactions[i];
+      var trxDate = new Date(trx.Timestamp);
+      
+      if (trxDate >= start && trxDate <= end) {
+        if (cashierName && trx.CashierName !== cashierName) continue;
+        
+        report.totalTransactions++;
+        report.totalRevenue += trx.Total || 0;
+        report.totalDiscount += trx.Discount || 0;
+        report.totalTax += trx.Tax || 0;
+        
+        var method = trx.PaymentMethod || 'Cash';
+        if (!report.paymentMethods[method]) {
+          report.paymentMethods[method] = { count: 0, amount: 0 };
+        }
+        report.paymentMethods[method].count++;
+        report.paymentMethods[method].amount += trx.Total || 0;
+        
+        report.transactions.push({
+          id: trx.TransactionID,
+          time: trx.Timestamp,
+          total: trx.Total,
+          method: method
+        });
+      }
+    }
+    
+    report.netRevenue = report.totalRevenue - report.totalDiscount - report.totalTax;
+    report.averageTransaction = report.totalTransactions > 0 ? report.totalRevenue / report.totalTransactions : 0;
+    
+    return report;
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+// ============================================================
+// CUSTOMERS
+// ============================================================
+
+function getCustomers() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Customer_Data');
+    if (!sheet || sheet.getLastRow() <= 1) return [];
+    
+    var data = sheet.getDataRange().getValues();
+    var customers = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row && row[0]) {
+        customers.push({
+          CustomerID: String(row[0]),
+          Name: String(row[1] || ''),
+          Phone: String(row[2] || ''),
+          Email: String(row[3] || ''),
+          Points: parseFloat(row[4]) || 0,
+          TotalSpend: parseFloat(row[5]) || 0,
+          TotalVisits: parseFloat(row[6]) || 0,
+          IsVIP: row[8] === 'TRUE' || row[8] === true
+        });
+      }
+    }
+    return customers;
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveCustomer(data) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Customer_Data');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Customer_Data');
+      sheet.appendRow(['CustomerID', 'Name', 'Phone', 'Email', 'Points', 'TotalSpend', 'TotalVisits', 'LastVisit', 'IsVIP']);
+    }
+    
+    var custData = sheet.getDataRange().getValues();
+    var customerId = 'CUS-' + String(custData.length).padStart(4, '0');
+    
+    sheet.appendRow([
+      customerId,
+      data.Name,
+      data.Phone || '',
+      data.Email || '',
+      data.Points || 0,
+      0,
+      0,
+      new Date(),
+      data.IsVIP || false
+    ]);
+    
+    lock.releaseLock();
+    return { success: true, message: 'Customer added!', customerId: customerId };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function addCustomerPoints(customerId, points) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Customer_Data');
+    if (!sheet) return { success: false };
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === String(customerId)) {
+        var currentPoints = parseFloat(data[i][4]) || 0;
+        var newPoints = Math.max(0, currentPoints + points);
+        sheet.getRange(i + 1, 5).setValue(newPoints);
+        sheet.getRange(i + 1, 7).setValue(parseFloat(data[i][6]) + 1);
+        sheet.getRange(i + 1, 8).setValue(new Date());
+        if (newPoints >= 1000) {
+          sheet.getRange(i + 1, 9).setValue('TRUE');
+        }
+        return { success: true, newPoints: newPoints };
+      }
+    }
+    return { success: false };
+  } catch (error) {
+    return { success: false };
+  }
+}
+
+// ============================================================
+// STAFF
+// ============================================================
+
+function getStaffList() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Staff_Data');
+    if (!sheet || sheet.getLastRow() <= 1) {
+      return [
+        { StaffID: 'STF-001', FullName: 'Admin', Position: 'Owner', IsActive: true },
+        { StaffID: 'STF-002', FullName: 'Budi Kasir', Position: 'Cashier', IsActive: true }
+      ];
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var staff = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row && row[0]) {
+        staff.push({
+          StaffID: String(row[0]),
+          FullName: String(row[1] || ''),
+          Position: String(row[2] || ''),
+          IsActive: row[10] === 'TRUE' || row[10] === true
+        });
+      }
+    }
+    return staff;
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveStaff(data) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Staff_Data');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Staff_Data');
+      sheet.appendRow(['StaffID', 'FullName', 'Position', 'Email', 'Phone', 'JoinDate', 
+                       'BaseSalary', 'HourlyRate', 'ShiftSchedule', 'BankAccount', 'IsActive', 'Role', 'Branch']);
+    }
+    
+    var staffData = sheet.getDataRange().getValues();
+    var found = false;
+    var rowIndex = -1;
+    
+    for (var i = 1; i < staffData.length; i++) {
+      if (String(staffData[i][0]) === String(data.StaffID)) {
+        found = true;
+        rowIndex = i + 1;
+        break;
+      }
+    }
+    
+    if (found) {
+      sheet.getRange(rowIndex, 2).setValue(data.FullName);
+      sheet.getRange(rowIndex, 3).setValue(data.Position);
+      sheet.getRange(rowIndex, 11).setValue(data.IsActive);
+      sheet.getRange(rowIndex, 13).setValue(data.Branch || 'Head Office');
+    } else {
+      sheet.appendRow([
+        data.StaffID, data.FullName, data.Position, '', '', new Date(),
+        0, 0, '', '', data.IsActive, '', data.Branch || 'Head Office'
+      ]);
+    }
+    
+    lock.releaseLock();
+    return { success: true, message: found ? 'Staff updated!' : 'Staff added!' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function deleteStaff(staffId) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Staff_Data');
+    
+    if (!sheet) {
+      return { success: false, message: 'Staff sheet not found' };
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      if (String(data[i][0]) === String(staffId)) {
+        sheet.deleteRow(i + 1);
+        lock.releaseLock();
+        return { success: true, message: 'Staff deleted!' };
+      }
+    }
+    
+    lock.releaseLock();
+    return { success: false, message: 'Staff not found' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+// ============================================================
+// BRANCHES
+// ============================================================
+
+function getBranches() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Branches');
+    if (!sheet || sheet.getLastRow() <= 1) {
+      return [
+        { BranchID: 'BRN-001', BranchName: 'Head Office', Address: 'Jl. Contoh No. 1', Phone: '0812-3456-7890', Manager: 'Admin', Status: 'Active' }
+      ];
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var branches = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row && row[0]) {
+        branches.push({
+          BranchID: String(row[0]),
+          BranchName: String(row[1] || ''),
+          Address: String(row[2] || ''),
+          Phone: String(row[3] || ''),
+          Manager: String(row[4] || ''),
+          Status: String(row[5] || 'Active')
+        });
+      }
+    }
+    return branches;
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveBranch(data) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Branches');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Branches');
+      sheet.appendRow(['BranchID', 'BranchName', 'Address', 'Phone', 'Manager', 'Status']);
+    }
+    
+    var branchData = sheet.getDataRange().getValues();
+    var found = false;
+    var rowIndex = -1;
+    
+    for (var i = 1; i < branchData.length; i++) {
+      if (String(branchData[i][0]) === String(data.BranchID)) {
+        found = true;
+        rowIndex = i + 1;
+        break;
+      }
+    }
+    
+    if (found) {
+      sheet.getRange(rowIndex, 2).setValue(data.BranchName);
+      sheet.getRange(rowIndex, 3).setValue(data.Address);
+      sheet.getRange(rowIndex, 4).setValue(data.Phone);
+      sheet.getRange(rowIndex, 5).setValue(data.Manager);
+      sheet.getRange(rowIndex, 6).setValue(data.Status);
+    } else {
+      sheet.appendRow([data.BranchID, data.BranchName, data.Address, data.Phone, data.Manager, data.Status]);
+    }
+    
+    lock.releaseLock();
+    return { success: true, message: found ? 'Branch updated!' : 'Branch added!' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function deleteBranch(branchId) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Branches');
+    
+    if (!sheet) {
+      return { success: false, message: 'Branch sheet not found' };
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      if (String(data[i][0]) === String(branchId)) {
+        sheet.deleteRow(i + 1);
+        lock.releaseLock();
+        return { success: true, message: 'Branch deleted!' };
+      }
+    }
+    
+    lock.releaseLock();
+    return { success: false, message: 'Branch not found' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+// ============================================================
+// MENU CRUD
+// ============================================================
+
+function saveMenuItem(data) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var menuSheet = ss.getSheetByName('Menu_Master');
+    var stockSheet = ss.getSheetByName('Inventory_Stock');
+    
+    if (!menuSheet) {
+      menuSheet = ss.insertSheet('Menu_Master');
+      menuSheet.appendRow(['ItemID', 'ItemName', 'Category', 'Price', 'Cost', 'IsAvailable']);
+    }
+    
+    var menuData = menuSheet.getDataRange().getValues();
+    var found = false;
+    var rowIndex = -1;
+    
+    for (var i = 1; i < menuData.length; i++) {
+      if (String(menuData[i][0]) === String(data.ItemID)) {
+        found = true;
+        rowIndex = i + 1;
+        break;
+      }
+    }
+    
+    if (found) {
+      menuSheet.getRange(rowIndex, 2).setValue(data.ItemName);
+      menuSheet.getRange(rowIndex, 3).setValue(data.Category);
+      menuSheet.getRange(rowIndex, 4).setValue(data.Price);
+      menuSheet.getRange(rowIndex, 5).setValue(data.Cost);
+      menuSheet.getRange(rowIndex, 6).setValue(data.IsAvailable);
+    } else {
+      menuSheet.appendRow([data.ItemID, data.ItemName, data.Category, data.Price, data.Cost, data.IsAvailable]);
+    }
+    
+    if (!stockSheet) {
+      stockSheet = ss.insertSheet('Inventory_Stock');
+      stockSheet.appendRow(['ItemID', 'CurrentStock', 'MinStock', 'Unit']);
+    }
+    
+    var stockData = stockSheet.getDataRange().getValues();
+    var stockFound = false;
+    for (var i = 1; i < stockData.length; i++) {
+      if (String(stockData[i][0]) === String(data.ItemID)) {
+        stockFound = true;
+        var rowIdx = i + 1;
+        stockSheet.getRange(rowIdx, 2).setValue(data.Stock || 0);
+        stockSheet.getRange(rowIdx, 3).setValue(data.MinStock || 0);
+        stockSheet.getRange(rowIdx, 4).setValue(data.Unit || '');
+        break;
+      }
+    }
+    
+    if (!stockFound) {
+      stockSheet.appendRow([data.ItemID, data.Stock || 0, data.MinStock || 0, data.Unit || '']);
+    }
+    
+    lock.releaseLock();
+    return { success: true, message: found ? 'Menu updated!' : 'Menu added!' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function deleteMenuItem(itemId) {
+  try {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var menuSheet = ss.getSheetByName('Menu_Master');
+    
+    if (!menuSheet) {
+      return { success: false, message: 'Menu sheet not found' };
+    }
+    
+    var data = menuSheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      if (String(data[i][0]) === String(itemId)) {
+        menuSheet.deleteRow(i + 1);
+        lock.releaseLock();
+        return { success: true, message: 'Item deleted!' };
+      }
+    }
+    
+    lock.releaseLock();
+    return { success: false, message: 'Item not found' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+// ============================================================
+// QR MENU
+// ============================================================
+
+function getQRMenuList() {
+  try {
+    var menuItems = getMenuItems();
+    var result = [];
+    var url = ScriptApp.getService().getUrl();
+    for (var i = 0; i < menuItems.length; i++) {
+      result.push({
+        ItemID: menuItems[i].ItemID,
+        ItemName: menuItems[i].ItemName,
+        Price: menuItems[i].Price,
+        Category: menuItems[i].Category,
+        QRUrl: url + '?item=' + encodeURIComponent(menuItems[i].ItemID)
+      });
+    }
+    return result;
+  } catch (error) {
+    return [];
+  }
+}
+
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+function login(username, password) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Users');
+    if (!sheet) {
+      sheet = ss.insertSheet('Users');
+      sheet.appendRow(['UserID', 'Username', 'Password', 'FullName', 'Role', 'Email', 'Status']);
+      sheet.appendRow(['USR-0001', 'admin', 'admin123', 'Administrator', 'Owner', 'admin@menteri.com', 'Active']);
+      sheet.appendRow(['USR-0002', 'manager', 'manager123', 'Branch Manager', 'Manager', 'manager@menteri.com', 'Active']);
+      sheet.appendRow(['USR-0003', 'kasir', 'kasir123', 'Kasir', 'Cashier', 'kasir@menteri.com', 'Active']);
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (row[1] === username && row[2] === password && row[6] === 'Active') {
+        var sessionId = generateSessionId();
+        var sessionData = {
+          userId: row[0],
+          username: row[1],
+          role: row[4],
+          name: row[3],
+          email: row[5],
+          loginTime: new Date().toISOString()
+        };
+        
+        var sessionSheet = ss.getSheetByName('User_Sessions');
+        if (!sessionSheet) {
+          sessionSheet = ss.insertSheet('User_Sessions');
+          sessionSheet.appendRow(['SessionID', 'Data', 'LastActivity']);
+        }
+        sessionSheet.appendRow([sessionId, JSON.stringify(sessionData), new Date()]);
+        
+        return {
+          success: true,
+          sessionId: sessionId,
+          user: sessionData
+        };
+      }
+    }
+    return { success: false, message: 'Username atau password salah!' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function validateSession(sessionId) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('User_Sessions');
+    if (!sheet) return null;
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      var row = data[i];
+      if (row[0] === sessionId) {
+        var sessionData = JSON.parse(row[1]);
+        var lastActivity = new Date(row[2]);
+        var now = new Date();
+        var diffMinutes = (now - lastActivity) / (1000 * 60);
+        
+        if (diffMinutes > 480) {
+          sheet.deleteRow(i + 1);
+          return null;
+        }
+        
+        sheet.getRange(i + 1, 3).setValue(now);
+        return sessionData;
+      }
+    }
+    return null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function logout(sessionId) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('User_Sessions');
+    if (!sheet) return { success: true };
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      if (data[i][0] === sessionId) {
+        sheet.deleteRow(i + 1);
+        break;
+      }
+    }
+    return { success: true };
+  } catch (error) {
+    return { success: false };
+  }
+}
+
+function getCurrentUser(sessionId) {
+  return validateSession(sessionId);
+}
+
+function generateSessionId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+function sendLowStockAlert() {
+  try {
+    var inventory = getInventoryItems();
+    var menuItems = getMenuItems();
+    var lowItems = [];
+    
+    var nameMap = {};
+    for (var i = 0; i < menuItems.length; i++) {
+      nameMap[menuItems[i].ItemID] = menuItems[i].ItemName;
+    }
+    
+    for (var i = 0; i < inventory.length; i++) {
+      var item = inventory[i];
+      if (item.CurrentStock <= item.MinStock && item.CurrentStock > 0) {
+        lowItems.push({
+          id: item.ItemID,
+          name: nameMap[item.ItemID] || item.ItemID,
+          stock: item.CurrentStock,
+          min: item.MinStock,
+          unit: item.Unit || ''
+        });
+      }
+    }
+    
+    if (lowItems.length === 0) {
+      return { success: true, message: 'Tidak ada stok menipis' };
+    }
+    
+    var subject = '⚠️ ALERT: Stok Menipis - Menteri Cafe';
+    var body = 'Yth. Owner/Manager,\n\n';
+    body += 'Berikut adalah daftar item yang stoknya menipis:\n\n';
+    body += '='.repeat(40) + '\n';
+    for (var i = 0; i < lowItems.length; i++) {
+      var item = lowItems[i];
+      body += item.id + ' | ' + item.name + ' | ' + item.stock + ' | ' + item.min + ' | ' + item.unit + '\n';
+    }
+    body += '='.repeat(40) + '\n\n';
+    body += 'Total ' + lowItems.length + ' item perlu segera di-restock.\n\n';
+    body += 'Terima kasih,\nMenteri Cafe System';
+    
+    MailApp.sendEmail('owner@mentericafe.com', subject, body);
+    
+    return { success: true, message: 'Alert sent', items: lowItems.length };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function sendDailyReportEmail() {
+  try {
+    var yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    var dateStr = Utilities.formatDate(yesterday, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    
+    var allTransactions = getTransactionHistory(1000);
+    var revenue = 0;
+    var count = 0;
+    for (var i = 0; i < allTransactions.length; i++) {
+      var trxDate = new Date(allTransactions[i].Timestamp);
+      var trxDateStr = Utilities.formatDate(trxDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      if (trxDateStr === dateStr) {
+        revenue += allTransactions[i].Total || 0;
+        count++;
+      }
+    }
+    
+    var subject = '📊 Daily Report - Menteri Cafe ' + dateStr;
+    var body = 'Yth. Owner/Manager,\n\n';
+    body += 'Berikut adalah laporan harian:\n\n';
+    body += '📅 Tanggal: ' + dateStr + '\n';
+    body += '💰 Total Revenue: Rp ' + formatRupiah(revenue) + '\n';
+    body += '📋 Total Transaksi: ' + count + '\n';
+    body += '\nTerima kasih,\nMenteri Cafe System';
+    
+    MailApp.sendEmail('owner@mentericafe.com', subject, body);
+    
+    return { success: true };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
+function formatRupiah(number) {
+  if (number === undefined || number === null || isNaN(number)) number = 0;
+  return Math.round(number).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+function escapeHtml(str) {
+  if (str === undefined || str === null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ============================================================
+// ON OPEN - CREATE MENU
+// ============================================================
+
+function onOpen() {
+  try {
+    var ui = SpreadsheetApp.getUi();
+    var menu = ui.createMenu('☕ Menteri Cafe');
+    menu.addItem('🚀 Setup Data', 'setupPOSData');
+    menu.addSeparator();
+    menu.addItem('📊 Dashboard', 'showDashboard');
+    menu.addItem('📦 Check Stock Alert', 'sendLowStockAlert');
+    menu.addToUi();
+  } catch (e) {}
+}
+
+function showDashboard() {
+  var html = HtmlService.createHtmlOutput('<h1>Dashboard</h1><p>Coming soon</p>')
+    .setTitle('Dashboard')
+    .setWidth(600)
+    .setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Dashboard');
+}
