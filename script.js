@@ -10,17 +10,17 @@
     "use strict";
 
     // ==================== KONFIGURASI ====================
-    var SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxaWZVSqbmQdtiRSiw4zrNRtDZPjYd1KxZ8dghjFWvSQ2BOZ2i5sVDiMiYoWTbjXI5jjQ/exec";
+    var SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwBhvO1gmUN2TxZEK-cyAdRNOFWtStfBU6rA6D6eJcITYgT74uENkfN1H-LHPV14M6M/exec";
     var masterData = { pembeli: [], ikan: [], bongkaran: [], rekap: [], metodePembayaran: [] };
     var masterDataFull = null; // cache seluruh histori transaksi (dipakai saat "Muat Semua Data")
     var isFullHistoryLoaded = false;
     var batchItems = [];
     var batchCounter = 0;
     var dbConnected = false;
-    var DEFAULT_BATCH_COUNT = 5;
+    var DEFAULT_BATCH_COUNT = 1;
     var DEFAULT_ROWS_PER_BATCH = 4;
     var DEFAULT_PEMBELI = ['Pembeli 1', 'Pembeli 2', 'Pembeli 3', 'Pembeli 4', 'Pembeli 5'];
-    var DEFAULT_LOAD_DAYS = 30; // hanya load N hari terakhir saat pertama buka aplikasi
+    var DEFAULT_LOAD_DAYS = 14; // hanya load N hari terakhir saat pertama buka aplikasi
     var LS_PRICE_HISTORY_KEY = 'rpu_riwayatHargaIkan';
     var LS_LAST_UPDATE_KEY = 'rpu_lastUpdateIkan';
 
@@ -813,43 +813,49 @@
             var batch = batchItems[i];
             var dpValue = batch.dp || 0;
             var bongkaranValue = batch.bongkaran || bongkaranGlobal || '-';
-            // Kode unik per transaksi (per kartu batch), supaya semua item ikan di
-            // dalamnya tetap dikenali sebagai 1 kelompok transaksi yang sama walau
-            // disimpan satu-per-satu ke server (dipakai oleh tab Rekap > Rekap Transaksi).
-            var kodeTransaksiBatch = 'TX' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '-' + i;
+
+            // Kumpulkan seluruh item ikan yang valid dalam kartu batch ini.
+            // Satu kartu batch = SATU transaksi = SATU Kode Transaksi (dibuat oleh
+            // server di handleBatchSave sebagai UUID, agar konsisten dengan data lama).
+            var itemsValid = [];
             for (var j = 0; j < batch.items.length; j++) {
-                var item = batch.items[j];
-                if (!item.jenis || item.jumlah <= 0 || item.harga <= 0) continue;
-                var dpForItem = (j === 0) ? dpValue : 0;
-                var detailHtml = '<i class="fas fa-fish me-1"></i> <strong>' + item.jenis + '</strong>' +
-                    ' &nbsp;|&nbsp; ' + formatNumber(item.jumlah) + ' kg &times; Rp ' + formatNumber(item.harga) +
-                    ' &nbsp;|&nbsp; Pembeli: ' + (batch.pembeli || '-') +
-                    ' &nbsp;|&nbsp; Transaksi #' + (i + 1) + ' dari ' + batchItems.length;
-                updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-sync fa-spin me-1"></i> Menyimpan: ' + detailHtml);
-                try {
-                    await postToServer({
-                        tanggal: tanggalUTC,
-                        hari: hari,
-                        pembeli: batch.pembeli,
-                        jenisIkan: item.jenis,
-                        jumlah: item.jumlah,
-                        harga: item.harga,
-                        total: item.subtotal,
-                        dp: dpForItem,
-                        bongkaran: bongkaranValue,
-                        metodePembayaran: batch.metode,
-                        kodeTransaksi: kodeTransaksiBatch
-                    });
-                    totalSaved++;
-                    updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-check-circle me-1 text-success"></i> Tersimpan: ' + detailHtml);
-                } catch(err) {
-                    allSuccess = false;
-                    errorMsg = err.message;
-                    updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-exclamation-triangle me-1 text-danger"></i> Gagal menyimpan: ' + detailHtml);
-                    break;
-                }
+                var it = batch.items[j];
+                if (!it.jenis || it.jumlah <= 0 || it.harga <= 0) continue;
+                itemsValid.push({
+                    jenisIkan: it.jenis,
+                    jumlah: it.jumlah,
+                    harga: it.harga,
+                    subtotal: it.subtotal
+                });
             }
-            if (!allSuccess) break;
+            if (itemsValid.length === 0) continue;
+
+            var detailHtml = '<i class="fas fa-receipt me-1"></i> <strong>Transaksi #' + (i + 1) +
+                ' dari ' + batchItems.length + '</strong>' +
+                ' &nbsp;|&nbsp; Pembeli: ' + (batch.pembeli || '-') +
+                ' &nbsp;|&nbsp; ' + itemsValid.length + ' item ikan';
+            updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-sync fa-spin me-1"></i> Menyimpan: ' + detailHtml);
+
+            try {
+                await postToServer({
+                    action: 'saveBatch',
+                    tanggal: tanggalUTC,
+                    hari: hari,
+                    pembeli: batch.pembeli,
+                    bongkaran: bongkaranValue,
+                    metodePembayaran: batch.metode,
+                    dp: dpValue,
+                    items: itemsValid,
+                    totalBelanja: batch.total || 0
+                });
+                totalSaved += itemsValid.length;
+                updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-check-circle me-1 text-success"></i> Tersimpan: ' + detailHtml);
+            } catch(err) {
+                allSuccess = false;
+                errorMsg = err.message;
+                updateModalProgressSimpan(totalSaved, totalItemUntukDisimpan, '<i class="fas fa-exclamation-triangle me-1 text-danger"></i> Gagal menyimpan: ' + detailHtml);
+                break;
+            }
         }
         sembunyikanModalProgressSimpan();
         btnSimpan.prop('disabled', false).html('<i class="fas fa-save me-2"></i> Simpan Semua Transaksi');
@@ -888,7 +894,7 @@
         return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
     }
 
-    // loadAllData(fullHistory) - fullHistory=false (default): hanya menampung 30 hari terakhir
+    // loadAllData(fullHistory) - fullHistory=false (default): hanya menampung 14 hari terakhir
     // di memori agar tabel & filter tetap ringan. fullHistory=true: muat seluruh histori.
     async function loadAllData(fullHistory) {
         fullHistory = !!fullHistory;
@@ -999,7 +1005,7 @@
         }
     }
 
-    // Tampilkan info/tombol "Muat Semua Data" bila data yang aktif baru sebagian (30 hari terakhir)
+    // Tampilkan info/tombol "Muat Semua Data" bila data yang aktif baru sebagian (14 hari terakhir)
     function updateMuatSemuaDataBanner() {
         var box = $('#muatSemuaDataBox');
         if (!box.length) return;
