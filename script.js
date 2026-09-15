@@ -10,7 +10,7 @@
     "use strict";
 
     // ==================== KONFIGURASI ====================
-    var SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwBhvO1gmUN2TxZEK-cyAdRNOFWtStfBU6rA6D6eJcITYgT74uENkfN1H-LHPV14M6M/exec";
+    var SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx6AdnJ3XF0qotut_mRiVumqkTqrGNNTBwTefMJJaWBiAzkf-K10hJpomCzgdD63sNdnA/exec";
     var masterData = { pembeli: [], ikan: [], bongkaran: [], rekap: [], metodePembayaran: [] };
     var masterDataFull = null; // cache seluruh histori transaksi (dipakai saat "Muat Semua Data")
     var isFullHistoryLoaded = false;
